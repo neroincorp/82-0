@@ -40,3 +40,20 @@ The GitHub Actions workflow and local build script both use:
 `-scheme SeventeenZero`
 
 instead of `-target SeventeenZero`, which is required when using a custom `-derivedDataPath`.
+
+
+## Re-signable IPA fix
+
+This revision changes the GitHub build artifact from a completely unsigned app to an **ad-hoc signed** app before packaging it as an IPA. Apple documents that signing with the pseudo-identity `-` creates an ad-hoc signature. This does **not** make the app installable by itself; it simply gives re-signing tools a normally sealed app bundle to replace with your own certificate/profile signature.
+
+The workflow now:
+
+1. Builds for a physical iPhone target with Apple signing disabled.
+2. Checks the built `Info.plist`, bundle ID, and executable.
+3. Removes any old `_CodeSignature` and `embedded.mobileprovision`.
+4. Ad-hoc signs the `.app` with `codesign --sign -`.
+5. Runs strict `codesign` verification.
+6. Packages exactly `Payload/SeventeenZero.app` into `17-0-adhoc.ipa`.
+7. Tests the ZIP and checks for `Info.plist`, the executable, and `_CodeSignature/CodeResources` before uploading it.
+
+On GitHub, run **Build 17-0 Re-signable IPA** and download the artifact named **17-0-adhoc-ipa**. Inside is `17-0-adhoc.ipa`.

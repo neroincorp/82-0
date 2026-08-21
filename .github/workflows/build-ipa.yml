@@ -1,4 +1,4 @@
-name: Build 17-0 IPA
+name: Build 17-0 Re-signable IPA
 
 on:
   workflow_dispatch:
@@ -16,13 +16,14 @@ jobs:
 
       - name: Verify shared scheme
         run: |
-          xcodebuild -list \
-            -project SeventeenZero.xcodeproj
+          set -euo pipefail
+          xcodebuild -list -project SeventeenZero.xcodeproj
+          test -f SeventeenZero.xcodeproj/xcshareddata/xcschemes/SeventeenZero.xcscheme
 
-      - name: Build unsigned iPhone app
+      - name: Build iPhone app without Apple signing
         run: |
           set -euo pipefail
-          rm -rf build Payload 17-0-unsigned.ipa
+          rm -rf build Payload 17-0-adhoc.ipa
 
           xcodebuild \
             -project SeventeenZero.xcodeproj \
@@ -33,28 +34,100 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build
+            CODE_SIGN_IDENTITY='' \
+            clean build
 
-      - name: Package unsigned IPA
+      - name: Prepare and ad-hoc sign app
         run: |
           set -euo pipefail
-          APP="build/Build/Products/Release-iphoneos/SeventeenZero.app"
 
+          APP='build/Build/Products/Release-iphoneos/SeventeenZero.app'
           if [ ! -d "$APP" ]; then
-            echo "Built app was not found at: $APP"
-            find build/Build/Products -maxdepth 3 -type d -name '*.app' -print || true
+            echo "ERROR: Built app not found at $APP"
+            find build/Build/Products -maxdepth 4 -type d -name '*.app' -print || true
             exit 1
           fi
 
-          rm -rf Payload
-          mkdir Payload
+          PLIST="$APP/Info.plist"
+          if [ ! -f "$PLIST" ]; then
+            echo 'ERROR: Info.plist is missing from the built app.'
+            exit 1
+          fi
+
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$PLIST")
+          echo "Bundle ID: $BUNDLE_ID"
+          echo "Executable: $EXECUTABLE"
+
+          if [ -z "$BUNDLE_ID" ] || [ -z "$EXECUTABLE" ]; then
+            echo 'ERROR: Required Info.plist metadata is missing.'
+            exit 1
+          fi
+          if [ ! -f "$APP/$EXECUTABLE" ]; then
+            echo "ERROR: App executable does not exist: $APP/$EXECUTABLE"
+            exit 1
+          fi
+
+          # Remove anything from a previous signing attempt before sealing the app.
+          rm -rf "$APP/_CodeSignature"
+          rm -f "$APP/embedded.mobileprovision"
+          xattr -cr "$APP" || true
+
+          # Sign nested code first if Xcode ever adds any in a later version.
+          if [ -d "$APP/Frameworks" ]; then
+            find "$APP/Frameworks" -type d -name '*.framework' -print0 | while IFS= read -r -d '' ITEM; do
+              /usr/bin/codesign --force --sign - --timestamp=none "$ITEM"
+            done
+            find "$APP/Frameworks" -type f -name '*.dylib' -print0 | while IFS= read -r -d '' ITEM; do
+              /usr/bin/codesign --force --sign - --timestamp=none "$ITEM"
+            done
+          fi
+          if [ -d "$APP/PlugIns" ]; then
+            find "$APP/PlugIns" -type d -name '*.appex' -print0 | while IFS= read -r -d '' ITEM; do
+              /usr/bin/codesign --force --sign - --timestamp=none "$ITEM"
+            done
+          fi
+
+          # '-' is Apple's pseudo-identity for an ad-hoc signature.
+          /usr/bin/codesign --force --sign - --timestamp=none "$APP"
+
+          echo '--- Signature details ---'
+          /usr/bin/codesign --display --verbose=4 "$APP" 2>&1
+          echo '--- Signature verification ---'
+          /usr/bin/codesign --verify --deep --strict --verbose=4 "$APP"
+          echo '--- Executable type ---'
+          /usr/bin/file "$APP/$EXECUTABLE"
+          /usr/bin/lipo -info "$APP/$EXECUTABLE" || true
+
+      - name: Package validated IPA
+        run: |
+          set -euo pipefail
+          APP='build/Build/Products/Release-iphoneos/SeventeenZero.app'
+          IPA='17-0-adhoc.ipa'
+
+          rm -rf Payload "$IPA"
+          mkdir -p Payload
           cp -R "$APP" Payload/
-          /usr/bin/zip -qry 17-0-unsigned.ipa Payload
+          xattr -cr Payload || true
+
+          # Prevent Finder resource forks / AppleDouble files from entering the IPA.
+          export COPYFILE_DISABLE=1
+          /usr/bin/zip -qry "$IPA" Payload
+
+          echo '--- IPA contents ---'
+          /usr/bin/unzip -l "$IPA" | head -80
+          /usr/bin/unzip -t "$IPA"
+
+          # Structural checks required by typical iOS re-signers.
+          /usr/bin/unzip -Z1 "$IPA" | grep -q '^Payload/SeventeenZero.app/Info.plist$'
+          /usr/bin/unzip -Z1 "$IPA" | grep -q '^Payload/SeventeenZero.app/_CodeSignature/CodeResources$'
+          /usr/bin/unzip -Z1 "$IPA" | grep -q '^Payload/SeventeenZero.app/SeventeenZero$'
+
+          echo "Created validated re-signable IPA: $IPA"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 17-0-unsigned-ipa
-          path: 17-0-unsigned.ipa
+          name: 17-0-adhoc-ipa
+          path: 17-0-adhoc.ipa
           if-no-files-found: error
