@@ -6,26 +6,55 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Verify shared scheme
+        run: |
+          xcodebuild -list \
+            -project SeventeenZero.xcodeproj
+
       - name: Build unsigned iPhone app
         run: |
+          set -euo pipefail
+          rm -rf build Payload 17-0-unsigned.ipa
+
           xcodebuild \
             -project SeventeenZero.xcodeproj \
-            -target SeventeenZero \
+            -scheme SeventeenZero \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build
-      - name: Package IPA
+
+      - name: Package unsigned IPA
         run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release-iphoneos/SeventeenZero.app"
+
+          if [ ! -d "$APP" ]; then
+            echo "Built app was not found at: $APP"
+            find build/Build/Products -maxdepth 3 -type d -name '*.app' -print || true
+            exit 1
+          fi
+
+          rm -rf Payload
           mkdir Payload
-          cp -R build/Build/Products/Release-iphoneos/SeventeenZero.app Payload/
-          zip -qry 17-0-unsigned.ipa Payload
-      - uses: actions/upload-artifact@v4
+          cp -R "$APP" Payload/
+          /usr/bin/zip -qry 17-0-unsigned.ipa Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
         with:
           name: 17-0-unsigned-ipa
           path: 17-0-unsigned.ipa
+          if-no-files-found: error

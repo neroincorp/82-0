@@ -28,3 +28,15 @@ The included `.github/workflows/build-ipa.yml` can build the unsigned IPA on a G
 5. Sign the IPA with your own certificate before installing it.
 
 The bundled app target is `SeventeenZero`; its display name is `17-0`.
+
+## GitHub Actions build fix
+
+This version includes a **shared Xcode scheme** at:
+
+`SeventeenZero.xcodeproj/xcshareddata/xcschemes/SeventeenZero.xcscheme`
+
+The GitHub Actions workflow and local build script both use:
+
+`-scheme SeventeenZero`
+
+instead of `-target SeventeenZero`, which is required when using a custom `-derivedDataPath`.
